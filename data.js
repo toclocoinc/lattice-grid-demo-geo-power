@@ -29,12 +29,30 @@ async function startDuckDB() {
     const plantsUrl = new URL('./data/power-plants.parquet', location.href).href;
     const countriesUrl = new URL('./data/countries.parquet', location.href).href;
 
+    // Both files are fetched whole and handed to DuckDB as in-memory buffers
+    // rather than read over HTTP ranges. Some static hosts (GitHub Pages
+    // among them) serve `.parquet` gzip-encoded and answer byte ranges over
+    // the compressed body, so an HTTP filesystem that sizes the file from a
+    // HEAD then reads its footer at the wrong offset. A plain fetch is
+    // inflated by the browser and is exact; at 2 MB in total the whole-file
+    // read is also the cheapest way to load them.
+    const register = async (name, url) => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+        await db.registerFileBuffer(name, new Uint8Array(await res.arrayBuffer()));
+        return name;
+    };
+    const [plantsFile, countriesFile] = await Promise.all([
+        register('power-plants.parquet', plantsUrl),
+        register('countries.parquet', countriesUrl),
+    ]);
+
     // One adapter per relation, both spatial-aware. `spatial: true` runs
     // `INSTALL spatial; LOAD spatial;` once per connection (a no-op here,
     // already loaded above) and projects the geometry column as GeoJSON so
     // the `geometry` type consumes it directly.
     const plantsAdapter = LatticeGrid.duckdbAdapter({
-        connection, from: `read_parquet('${plantsUrl}')`, spatial: true,
+        connection, from: `read_parquet('${plantsFile}')`, spatial: true,
     });
     // `aggregates: { default: 'engine' }` is what actually lets the fuel-mix
     // bar's `aggregate: 'engine'` (GEO-5) push its sum into DuckDB; without
@@ -64,8 +82,8 @@ async function startDuckDB() {
     const joinRes = await connection.query(`
         SELECT c.iso_a3 AS iso_a3, c.name AS name, ST_AsGeoJSON(c.geometry) AS geometry,
                coalesce(sum(p.capacity_mw), 0) AS capacity_mw
-        FROM read_parquet('${countriesUrl}') c
-        LEFT JOIN read_parquet('${plantsUrl}') p ON p.country = c.iso_a3
+        FROM read_parquet('${countriesFile}') c
+        LEFT JOIN read_parquet('${plantsFile}') p ON p.country = c.iso_a3
         GROUP BY c.iso_a3, c.name, c.geometry
     `);
     const countryRows = joinRes.toArray().map((r) => r.toJSON());
