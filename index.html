@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>Global Power Plants Demo - Lattice Grid</title>
+        <script>
+            // Where the library comes from. `false` loads the published release from the CDN;
+            // `true` loads a local build from vendor/ instead (not part of this repository).
+            const LOCAL = false;
+            const LIB = LOCAL ? 'vendor/' : 'https://cdn.jsdelivr.net/npm/@toclocoinc/lattice-grid@1.73.0/';
+            document.write('<link rel="stylesheet" href="' + LIB + 'lattice-grid.min.css">');
+            for (const file of ['lattice-grid.min.js', 'modules/layout.min.js',
+                'modules/charts.min.js', 'modules/kpi.min.js', 'modules/geometry.min.js',
+                'modules/chart-bubblemap.min.js', 'modules/chart-hexmap.min.js',
+                'modules/chart-choropleth.min.js', 'modules/geo-world-110m.min.js']) {
+                document.write('<script src="' + LIB + file + '"><' + '/script>');
+            }
+        </script>
+        <style>
+            body { padding: 0; margin: 0; background: #14181c; color: #e4e9ee;
+                   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+            [data-lat-layout-body] { overflow: hidden; background: #14181c; color: #e4e9ee; }
+            .panel { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding: 4px 8px 2px; }
+            .panel__head { flex: 0 0 auto; font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+                           color: #99a4ae; padding: 0 2px 3px; }
+            .panel__body { flex: 1 1 auto; min-height: 0; position: relative; }
+            #status { position: fixed; top: 6px; left: 8px; font-size: 11px; color: #99a4ae; z-index: 5; }
+            #attribution { position: fixed; bottom: 4px; left: 8px; font-size: 10px; color: #6b7680; z-index: 5; }
+            #attribution a { color: #8fb4e3; }
+        </style>
+        <script src="data.js"></script>
+    </head>
+    <body data-theme="dark">
+        <div id="status">Starting DuckDB-Wasm&hellip;</div>
+        <div id="container" style="height: 100vh; margin: 0; padding: 0"></div>
+        <div id="attribution">Data: <a href="https://github.com/wri/global-power-plant-database" target="_blank" rel="noopener">World Resources Institute, Global Power Plant Database v1.3</a> (CC BY 4.0) &middot; country outlines: <a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a> (public domain)<span id="loadstat"></span></div>
+        <script>
+            // Bound to toclocoinc.github.io; does nothing anywhere else. localhost never needs a key.
+            LatticeGrid.setLicence('LG1.eyJ2IjoxLCJwIjoibGF0dGljZS1ncmlkIiwidCI6IlRPQ0xPQ08gSW5jIC0gcHVibGljIGRlbW9zIiwiZSI6IjIwMzAtMDEtMDEiLCJkIjpbInRvY2xvY29pbmMuZ2l0aHViLmlvIl19.9De42ua3aCGpiMB6EVRP7Tv-upUlDI-0T07rlSPzvCrsqg8t4YJi7SRnStEpAg48uzmcG7il1fR_TfwkUE7iCA');
+        </script>
+        <script>
+            const WINDOWS = [
+                { id: 'grid', title: 'Plants', xPos: 1, yPos: 1, xSize: 8, ySize: 20, chrome: false, movable: true, resizable: true },
+                { id: 'map', title: 'Bubble map', xPos: 9, yPos: 1, xSize: 12, ySize: 9, chrome: false, movable: true, resizable: true },
+                // F-GEODEMO-I: bubblemap has no fill-opacity option/token, so
+                // 34,936 bubbles overplot solid at world scale. `hexmap` bins
+                // by count instead of drawing every point, for a readable
+                // world-scale density view; the bubble map stays for zoomed-in
+                // per-plant reading.
+                { id: 'density', title: 'Density', xPos: 9, yPos: 10, xSize: 12, ySize: 6, chrome: false, movable: true, resizable: true },
+                { id: 'choropleth', title: 'Capacity by country', xPos: 9, yPos: 16, xSize: 6, ySize: 5, chrome: false, movable: true, resizable: true },
+                { id: 'fuel', title: 'Capacity by fuel', xPos: 15, yPos: 16, xSize: 6, ySize: 5, chrome: false, movable: true, resizable: true },
+                { id: 'kpis', title: 'KPIs', xPos: 21, yPos: 1, xSize: 4, ySize: 4, chrome: false, movable: true, resizable: true },
+            ];
+            const body = (id) => document.getElementById(id + '-body');
+            const panel = (id, heading) => {
+                const el = body(id);
+                el.className = 'panel';
+                el.innerHTML = '<div class="panel__head">' + heading + '</div><div class="panel__body"></div>';
+                return el.lastChild;
+            };
+
+            (async () => {
+                LatticeGridLayout.createLayout(document.getElementById('container'), {
+                    columns: 24, rows: 20, gap: 6, padding: 6, overflowX: 'static', overflowY: 'static', windows: WINDOWS,
+                });
+
+                const loadStart = performance.now();
+                const { plants, countryRows, plantsFileUrl } = await startDuckDB();
+                document.getElementById('status').textContent = 'Loading the full relation…';
+
+                // 1. The grid: one row per plant, over the DuckDB pushdown source.
+                const grid = LatticeGrid.createGrid(panel('grid', 'Plants'), {
+                    theme: 'dark',
+                    // `name` alone is not unique (408 of 34,936 plants share a
+                    // name with another plant); `id` is the WRI database's own
+                    // gppd_idnr, unique per row.
+                    rowKey: 'id',
+                    source: plants,
+                    columns: [
+                        // `id` is the rowKey; also declared as a column (hidden) so
+                        // the KPI's count tile below can reduce over it — a tile
+                        // `field` naming no column on the grid reports "no data"
+                        // rather than a number (found in verification, F-GEODEMO-A).
+                        { field: 'id', title: 'ID', layout: { hidden: true } },
+                        { field: 'name', title: 'Plant' },
+                        { field: 'country', title: 'Country', layout: { width: 90 } },
+                        { field: 'primary_fuel', title: 'Fuel', layout: { width: 90 } },
+                        { field: 'capacity_mw', title: 'MW', type: 'number', format: { decimals: 1 }, layout: { width: 90 } },
+                        { field: 'commissioning_year', title: 'Year', type: 'number', layout: { width: 70 } },
+                        // Present so the geometry type normalises it for the map below; not shown.
+                        { field: 'geometry', title: 'Location', type: 'geometry', layout: { hidden: true } },
+                        // `hexmap` (the density window) is not one of GEO-3's
+                        // geometry-column types, so it needs plain lon/lat.
+                        { field: 'lon', title: 'Lon', type: 'number', layout: { hidden: true } },
+                        { field: 'lat', title: 'Lat', type: 'number', layout: { hidden: true } },
+                    ],
+                });
+
+                // Measure the `fullDataset` load: rows held, bytes the parquet
+                // file cost DuckDB-Wasm to read, and wall time from the DuckDB
+                // connection settling to every row landing. DuckDB-Wasm's own
+                // httpfs read happens inside its worker, whose Resource Timing
+                // entries are a separate timeline the main page cannot see, so
+                // bytes come from a plain HEAD on this thread instead — good
+                // evidence here (checked against the server's own access log):
+                // an unfiltered `fullDataset` pull is a whole `GET 200`, not a
+                // ranged `206`, so the file's own size IS what crossed the wire.
+                // Polls (rather than a single event) because `fullDataset`'s
+                // fetch can span more than one grid announcement while it
+                // streams in — and `rows.matchCount()` itself moves during that
+                // stream (it can briefly agree with a still-partial
+                // `rows.count()`), so the stop condition is TWO CONSECUTIVE
+                // stable reads, not one read where the two counters happen to
+                // match.
+                let lastHeld = -1;
+                const loadPoll = setInterval(async () => {
+                    const held = grid.rows.count();
+                    if (held === 0 || held !== lastHeld) { lastHeld = held; return; }
+                    clearInterval(loadPoll);
+                    const head = await fetch(plantsFileUrl, { method: 'HEAD' }).catch(() => null);
+                    const bytes = head ? Number(head.headers.get('content-length')) || 0 : 0;
+                    const ms = Math.round(performance.now() - loadStart);
+                    window.__loadStats = { rows: held, bytes, ms };
+                    document.getElementById('status').textContent = '';
+                    // In the footer beside the attribution (round 3), not the
+                    // grid's own heading — this is a load measurement, not a
+                    // grid caption.
+                    document.getElementById('loadstat').textContent
+                        = ' · ' + held.toLocaleString() + ' rows, ' + (bytes / 1e6).toFixed(2) + ' MB, ' + ms + ' ms';
+                }, 200);
+
+                // 2. The bubble map (round 3, was `markermap`): one bubble per
+                //    plant, sized by `capacity_mw` — 34,936 uniform dots read as
+                //    a blob, and `bubblemap` accepts a `geometry` column exactly
+                //    as `markermap` does (GEO-3's scope explicitly names both).
+                //    Radius is area-true (`sqrt` scale internally), smallest
+                //    bubble always 3px; no page-side sizing hack. `viewportFilter:
+                //    true` (GEO-4) writes the box now on screen as a `withinBbox`
+                //    condition on `grid.filters`, which the DuckDB spatial
+                //    adapter above pushes down as `ST_CoveredBy` — so panning
+                //    narrows the grid, the choropleth's plant sums and the
+                //    fuel-mix bar together. There is no zoom toolbar on a map
+                //    chart yet (F-GEO4-B): pan by drag, and reset the view
+                //    (which also clears the filter) by double-clicking the map
+                //    or pressing "0" while it has focus — the chart's own reset,
+                //    not a page button. `labels: false`: at 34,936 points a name
+                //    beside every bubble is unreadable at world scale; `label`
+                //    still names the tooltip's identity column, read on hover.
+                const worldPack = LatticeGridGeoWorld110m.pack;
+                const map = LatticeGrid.createChart({
+                    grid, container: panel('map', 'Bubble map · plants sized by MW · drag to pan, double-click or 0 to reset'),
+                    type: 'bubblemap', geometry: 'geometry', label: 'name', size: 'capacity_mw',
+                    maxRadius: 14, shapes: worldPack,
+                    viewportFilter: true, labels: false,
+                });
+
+                // 2b. Density (round 4, F-GEODEMO-I): `bubblemap` has no
+                // fill-opacity option or theme token (checked `types.d.ts` and
+                // the drawer itself — `fill-opacity: 0.5` is a hard-coded SVG
+                // attribute, not configurable), so 34,936 bubbles overplot
+                // solid over every populated region. `hexmap` bins by count
+                // instead of drawing every point — readable at world scale —
+                // and is not one of GEO-3's geometry-column types, so it reads
+                // the plain `lon`/`lat` columns added to the dataset for it.
+                // `shapes` (round 5, BACKLOG-0001321 part 2): without a pack
+                // hexmap drew over a blank plane; with it, cells place through
+                // the pack's own fitted projection, outlines faint underneath.
+                const density = LatticeGrid.createChart({
+                    grid, container: panel('density', 'Density · plants per hex cell (readable at world scale)'),
+                    type: 'hexmap', lon: 'lon', lat: 'lat', legend: true, shapes: worldPack,
+                });
+                window.__density = density;
+
+                // 3. The choropleth: capacity by country, summed and joined in SQL
+                //    (data.js's `countries` adapter) — a derived/aggregate query, drawn
+                //    straight from the polygon column, no geometry pack needed.
+                const countryGrid = LatticeGrid.createHeadlessGrid({
+                    // `iso_a3` is not unique: Natural Earth codes three
+                    // disputed territories (Kosovo, N. Cyprus, Somaliland)
+                    // all `-99`. Every country `name` in this set is unique.
+                    rowKey: 'name', rows: countryRows,
+                    columns: [
+                        { field: 'name', title: 'Country' },
+                        { field: 'geometry', title: 'Outline', type: 'geometry' },
+                        { field: 'capacity_mw', title: 'MW', type: 'number' },
+                    ],
+                });
+                // `shapes` (round 5): without a pack the choropleth's own
+                // fit-to-drawn-geometry left most of its host empty (measured:
+                // host 474x196, svg only 462x143, drawn polygons only
+                // 111x107 — F-GEODEMO-L). The world-110m pack gives it the
+                // same known-good fitted projection the bubble map and the
+                // density map use, as a backdrop under the country fills.
+                const choroplethChart = LatticeGrid.createChart({
+                    grid: countryGrid, container: panel('choropleth', 'Capacity by country · MW (SQL join, not engine aggregate)'),
+                    type: 'choropleth', geometry: 'geometry', y: 'capacity_mw', label: 'name', shapes: worldPack,
+                });
+                window.__choroplethChart = choroplethChart;
+
+                // 4. Capacity by fuel, aggregated THROUGH THE ENGINE (GEO-5): the bar
+                //    asks source.aggregate() for the grouped sum rather than summing the
+                //    loaded page, because the grid holds far fewer rows than match.
+                const fuelChart = LatticeGrid.createChart({
+                    grid, container: panel('fuel', 'Capacity by fuel'),
+                    type: 'bar', x: 'primary_fuel', y: { col: 'capacity_mw', fn: 'sum' },
+                    aggregate: 'engine',
+                });
+                const paintFuelHeading = () => {
+                    body('fuel').querySelector('.panel__head').textContent
+                        = 'Capacity by fuel · aggregated in the ' + fuelChart.provenance().source;
+                };
+
+                // 5. KPI tiles: plants and MW matching the current view. `count`
+                //    over `id` reads `grid.rows.count()`, the matching total a
+                //    pushdown source reports regardless of how many rows have
+                //    actually landed in the browser — but a `sum` tile can only
+                //    reduce rows the browser actually holds, which is just the
+                //    loaded page (F-GEODEMO-B): 200 of 34,936 plants, an
+                //    obviously-wrong "total" MW. So `mw` asks the engine
+                //    directly for the true sum, over whatever the grid is
+                //    currently filtered to (the viewport bbox once GEO-4 pans),
+                //    the same `source.aggregate()` the fuel chart uses.
+                let mwTotal = null;
+                const refreshMwTotal = () => plants.aggregate(
+                    { filters: grid.filters.get(), sort: [], range: null, groupBy: [] },
+                    [{ id: 'mw', col: 'capacity_mw', fn: 'sum' }],
+                ).then((r) => { mwTotal = (r.values && r.values.mw) || null; window.__kpi.refresh(); });
+
+                window.__kpi = LatticeGridKPI.createKPI(panel('kpis', 'In view'), {
+                    grid, rowKey: 'id', columns: 1,
+                    tiles: [
+                        { id: 'plants', label: 'Plants in view', aggregation: 'count', field: 'id' },
+                        {
+                            id: 'mw', label: 'MW in view', aggregation: 'custom', compute: () => mwTotal,
+                            format: { decimals: 0 },
+                        },
+                    ],
+                });
+                // The grid's first pushdown page and both aggregate queries land
+                // asynchronously, after this panel and chart were built; a page
+                // of rows arriving is deliberately not one of the changes a
+                // grid-bound KPI panel re-reads on its own, so everything is
+                // refreshed once the first paint has settled, then on a slow
+                // interval (and, later, whenever the map's viewport filter
+                // changes what matches).
+                paintFuelHeading();
+                refreshMwTotal();
+                grid.on('filter:changed', refreshMwTotal);
+                requestAnimationFrame(() => requestAnimationFrame(() => { window.__kpi.refresh(); paintFuelHeading(); }));
+                setInterval(() => { window.__kpi.refresh(); paintFuelHeading(); }, 3000);
+                window.__grid = grid; window.__fuelChart = fuelChart; window.__countryGrid = countryGrid; window.__plants = plants; window.__map = map;
+            })().catch((err) => {
+                console.error('[geo-power]', err);
+                document.getElementById('status').textContent = 'DuckDB-Wasm could not start here. It needs a browser with WebAssembly.';
+            });
+        </script>
+    </body>
+</html>
