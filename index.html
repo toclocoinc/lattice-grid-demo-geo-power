@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
     <head>
         <meta charset="utf-8">
         <title>Global Power Plants Demo - Lattice Grid</title>
@@ -8,7 +8,7 @@
             // Where the library comes from. `false` loads the published release from the CDN;
             // `true` loads a local build from vendor/ instead (not part of this repository).
             const LOCAL = false;
-            const LIB = LOCAL ? 'vendor/' : 'https://cdn.jsdelivr.net/npm/@toclocoinc/lattice-grid@1.73.0/';
+            const LIB = LOCAL ? 'vendor/' : 'https://cdn.jsdelivr.net/npm/@toclocoinc/lattice-grid@1.74.0/';
             document.write('<link rel="stylesheet" href="' + LIB + 'lattice-grid.min.css">');
             for (const file of ['lattice-grid.min.js', 'modules/layout.min.js',
                 'modules/charts.min.js', 'modules/kpi.min.js', 'modules/geometry.min.js',
@@ -18,9 +18,9 @@
             }
         </script>
         <style>
-            body { padding: 0; margin: 0; background: #14181c; color: #e4e9ee;
+            body { padding: 0; margin: 0; background: var(--lattice-background, #14181c); color: var(--lattice-foreground, #e4e9ee);
                    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-            [data-lat-layout-body] { overflow: hidden; background: #14181c; color: #e4e9ee; }
+            [data-lat-layout-body] { overflow: hidden; }
             .panel { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding: 4px 8px 2px; }
             .panel__head { flex: 0 0 auto; font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
                            color: #99a4ae; padding: 0 2px 3px; }
@@ -31,7 +31,7 @@
         </style>
         <script src="data.js"></script>
     </head>
-    <body data-theme="dark">
+    <body>
         <div id="status">Starting DuckDB-Wasm&hellip;</div>
         <div id="container" style="height: 100vh; margin: 0; padding: 0"></div>
         <div id="attribution">Data: <a href="https://github.com/wri/global-power-plant-database" target="_blank" rel="noopener">World Resources Institute, Global Power Plant Database v1.3</a> (CC BY 4.0) &middot; country outlines: <a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a> (public domain)<span id="loadstat"></span></div>
